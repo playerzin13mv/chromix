@@ -6,6 +6,7 @@ App de celular (modo horizontal) para criar **Chromatics de FNF** e exportar com
 - **Importa** qualquer áudio (WAV, MP3, OGG, M4A...) ou **grava** pelo microfone
 - **Corta** o trecho que você quer e define um **loop** (com botão "Suavizar loop" para emendar sem estalo)
 - **Detecta a nota** do som automaticamente (e você pode ajustar a nota raiz e a afinação fina)
+- **Modo vogais (A, E, I, O e U opcional)**: grave ou importe um áudio para cada vogal e elas se repetem pelo teclado todo (com 4 vogais: Dó = A, Dó# = E, Ré = I, Ré# = O, Mi = A de novo...; com o U, a sequência passa a ter 5 vogais). Cada vogal tem seu próprio corte, loop e nota raiz, e fica com o volume nivelado na exportação
 - **Piano para testar** a Chromatic na hora (multitoque, glissando, cada tecla acende numa cor)
 - **Escala cromática automática** para ouvir a sequência completa
 - **Envelope** (ataque e liberação), volume e normalização
@@ -41,6 +42,15 @@ Para atualizar o app depois: troque os arquivos e rode `bash enviar.sh` de novo.
 4. Confira a **nota raiz** (use **Detectar nota** se não souber) e teste no piano.
 5. Se quiser que a nota segure enquanto o dedo está na tecla, ligue o **loop** e arraste as barras verdes na aba **Loop**.
 6. Toque em **Exportar .sf2** e escolha onde salvar.
+
+## Como usar o modo vogais
+1. Dentro do projeto, toque em **Modo vogais** (acima da onda). Aparecem os botões **A E I O U** (o U é opcional).
+2. Escolha a vogal **A**, depois **Gravar** (ao parar, o app já seleciona a próxima vogal para você gravar) ou **Importar áudio**.
+3. Dá para **importar vários áudios de uma vez**: eles vão para as vogais em ordem, a partir da selecionada (1º arquivo = A, 2º = E...).
+4. Cada vogal tem seu próprio corte, loop e nota raiz (use **Detectar nota** em cada uma). Os pontinhos ● mostram quais já têm áudio.
+5. No piano, a tecla mostra qual vogal está tocando. Use **Só esta vogal** para ouvir e afinar uma vogal isolada.
+6. **Exportar .sf2**: o arquivo sai com a mesma sequência de vogais do piano.
+7. **Voz de exemplo** no modo vogais carrega A, E, I, O sintéticas nas vogais vazias, para você testar sem gravar.
 
 ## Dicas
 - Para um "sample de voz" (tipo um "ah" ou "oh"), o loop deixa o som segurar como um instrumento.

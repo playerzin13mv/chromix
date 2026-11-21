@@ -7,12 +7,40 @@ import android.media.AudioManager;
 import android.media.AudioTrack;
 import android.os.Process;
 
-/** Sintetizador polifônico que toca a amostra em qualquer nota (teste do piano). */
+/**
+ * Sintetizador polifônico que toca as amostras em qualquer nota (teste do piano).
+ * Tem 5 "sons" (vogais). No modo vogais a tecla k toca a vogal ativa (k mod n); fora dele toca o som 0.
+ */
 public final class Synth {
+
+    /** Uma amostra pronta para tocar (imutável: notas já tocando não são afetadas por edições). */
+    private static final class Sound {
+        final float[] data;
+        final int rate, start, end, ls, le, root;
+        final boolean loop;
+        final double fine;
+        final float gain;
+
+        Sound(float[] d, int rate, int from, int to, boolean loopOn, int ls, int le, int root, double fine, float gain) {
+            this.data = d;
+            this.rate = rate;
+            this.start = Math.max(0, from);
+            this.end = Math.min(d.length, to);
+            this.loop = loopOn;
+            this.ls = ls;
+            this.le = le;
+            this.root = root;
+            this.fine = fine;
+            this.gain = gain;
+        }
+
+        boolean loopActive() { return loop && le - ls >= 16 && ls >= start && le <= end; }
+    }
 
     private static final class Voice {
         boolean on, released;
-        int key, pid;
+        int pid;
+        Sound snd;
         double pos, step;
         float env;
         long age;
@@ -20,6 +48,7 @@ public final class Synth {
 
     private final Object lock = new Object();
     private final Voice[] vs = new Voice[32];
+    private final Sound[] sounds = new Sound[5];
     private final int outRate;
     private final int frames;
     private final Context ctx;
@@ -29,12 +58,10 @@ public final class Synth {
     private volatile boolean running;
     private long ageCounter = 0;
 
-    // amostra e parâmetros
-    private float[] data = new float[0];
-    private int srcRate = 44100, start = 0, end = 0, ls = 0, le = 0, root = 60;
-    private boolean loop = false;
-    private double fine = 0;
-    private float atk = 0.005f, rel = 0.15f, gain = 0.9f;
+    private boolean vowelMode = false;
+    private int[] active = new int[]{0};
+    private int solo = -1;
+    private float atk = 0.005f, rel = 0.15f;
 
     public Synth(Context c) {
         ctx = c.getApplicationContext();
@@ -44,23 +71,27 @@ public final class Synth {
         frames = lat == 0 ? 256 : (lat == 2 ? 1024 : 512);
     }
 
-    /** Define a amostra. 'from'..'to' é o trecho cortado; ls..le o loop (em índices absolutos). */
-    public void set(float[] d, int rate, int from, int to, boolean loopOn, int loopS, int loopE,
-                    int rootNote, double fineCents, float attackSec, float releaseSec, float g) {
+    /** Define (ou limpa, se d == null) o som de um slot. from..to é o trecho cortado; ls..le o loop. */
+    public void setSound(int slot, float[] d, int rate, int from, int to, boolean loopOn, int ls, int le,
+                         int rootNote, double fineCents, float gain) {
+        if (slot < 0 || slot >= sounds.length) return;
+        Sound s = null;
+        if (d != null && Math.min(d.length, to) - Math.max(0, from) >= 4) {
+            s = new Sound(d, rate, from, to, loopOn, ls, le, rootNote, fineCents, gain);
+        }
+        synchronized (lock) { sounds[slot] = s; }
+    }
+
+    public void setEnvelope(float attackSec, float releaseSec) {
+        synchronized (lock) { atk = attackSec; rel = releaseSec; }
+    }
+
+    /** vowel: usar o mapeamento de vogais; activeSlots: slots com áudio, em ordem; soloSlot: -1 ou um slot só. */
+    public void setMapping(boolean vowel, int[] activeSlots, int soloSlot) {
         synchronized (lock) {
-            data = d == null ? new float[0] : d;
-            srcRate = rate;
-            start = Math.max(0, from);
-            end = Math.min(data.length, to);
-            if (end < start) end = start;
-            loop = loopOn;
-            ls = loopS;
-            le = loopE;
-            root = rootNote;
-            fine = fineCents;
-            atk = attackSec;
-            rel = releaseSec;
-            gain = g;
+            vowelMode = vowel;
+            active = activeSlots == null ? new int[0] : activeSlots.clone();
+            solo = soloSlot;
         }
     }
 
@@ -117,10 +148,6 @@ public final class Synth {
             if (track != null) { track.stop(); track.release(); }
         } catch (Exception ignored) { }
         track = null;
-        kill();
-    }
-
-    private void kill() {
         synchronized (lock) {
             for (Voice v : vs) if (v != null) v.on = false;
         }
@@ -128,7 +155,14 @@ public final class Synth {
 
     public void noteOn(int key, int pid) {
         synchronized (lock) {
-            if (end - start < 4) return;
+            int slot;
+            if (solo >= 0) slot = solo;
+            else if (vowelMode && active.length > 0) slot = active[key % active.length];
+            else slot = 0;
+            if (slot < 0 || slot >= sounds.length) return;
+            Sound sd = sounds[slot];
+            if (sd == null) return;
+
             Voice v = null;
             for (int i = 0; i < vs.length; i++) {
                 if (vs[i] == null) { vs[i] = new Voice(); v = vs[i]; break; }
@@ -140,13 +174,13 @@ public final class Synth {
             }
             v.on = true;
             v.released = false;
-            v.key = key;
             v.pid = pid;
-            v.pos = start;
+            v.snd = sd;
+            v.pos = sd.start;
             v.env = 0f;
             v.age = ++ageCounter;
-            double semis = key - root - fine / 100.0;
-            v.step = Math.pow(2.0, semis / 12.0) * srcRate / outRate;
+            double semis = key - sd.root - sd.fine / 100.0;
+            v.step = Math.pow(2.0, semis / 12.0) * sd.rate / outRate;
         }
     }
 
@@ -165,13 +199,15 @@ public final class Synth {
     private void render(float[] mix) {
         java.util.Arrays.fill(mix, 0f);
         synchronized (lock) {
-            final float[] d = data;
-            final boolean loopActive = loop && le - ls >= 16 && ls >= start && le <= end;
-            final int loopLen = le - ls;
             final float atkInc = 1f / (Math.max(atk, 0.001f) * outRate);
             final float relDec = 1f / (Math.max(rel, 0.005f) * outRate);
             for (Voice vo : vs) {
-                if (vo == null || !vo.on) continue;
+                if (vo == null || !vo.on || vo.snd == null) continue;
+                final Sound sd = vo.snd;
+                final float[] d = sd.data;
+                final int end = sd.end, le = sd.le, ls = sd.ls;
+                final boolean loopActive = sd.loopActive();
+                final int loopLen = le - ls;
                 double pos = vo.pos;
                 float env = vo.env;
                 for (int i = 0; i < frames; i++) {
@@ -186,13 +222,13 @@ public final class Synth {
                     if (i0 < 0 || i0 >= d.length) { vo.on = false; break; }
                     float f = (float) (pos - i0);
                     float a = d[i0];
-                    float b = d[Math.min(i0 + 1, end - 1 < 0 ? 0 : end - 1)];
+                    float b = d[Math.min(i0 + 1, Math.max(0, end - 1))];
                     float s = a + (b - a) * f;
                     if (!loopActive) {
                         int rem = end - i0;
                         if (rem < 128) s *= rem / 128f;
                     }
-                    mix[i] += s * env * gain;
+                    mix[i] += s * env * sd.gain;
                     pos += vo.step;
                     if (loopActive) while (pos >= le) pos -= loopLen;
                 }

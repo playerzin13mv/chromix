@@ -27,7 +27,10 @@ public final class ProjectStore {
     }
 
     private static File jsonFile(Context c, String id) { return new File(dir(c), id + ".json"); }
-    private static File wavFile(Context c, String id) { return new File(dir(c), id + ".wav"); }
+    /** Slot 0 usa o nome antigo (id.wav); os outros usam id_1.wav ... id_4.wav. */
+    private static File wavFile(Context c, String id, int slot) {
+        return new File(dir(c), slot == 0 ? id + ".wav" : id + "_" + slot + ".wav");
+    }
 
     private static byte[] readAll(File f) throws IOException {
         try (FileInputStream in = new FileInputStream(f)) {
@@ -86,8 +89,8 @@ public final class ProjectStore {
         }
     }
 
-    public static float[] loadAudio(Context c, Project p) {
-        File f = wavFile(c, p.id);
+    public static float[] loadAudio(Context c, Project p, int slot) {
+        File f = wavFile(c, p.id, slot);
         if (!f.exists()) return null;
         try {
             AudioIO.Pcm pcm = AudioIO.parseWav(readAll(f));
@@ -97,15 +100,17 @@ public final class ProjectStore {
         }
     }
 
-    public static void saveAudio(Context c, Project p, float[] data) throws IOException {
-        AudioIO.writeWav(wavFile(c, p.id), data, p.sampleRate);
+    public static void saveAudio(Context c, Project p, int slot, float[] data) throws IOException {
+        AudioIO.writeWav(wavFile(c, p.id, slot), data, p.slots[slot].sampleRate);
     }
 
     public static void delete(Context c, Project p) {
         //noinspection ResultOfMethodCallIgnored
         jsonFile(c, p.id).delete();
-        //noinspection ResultOfMethodCallIgnored
-        wavFile(c, p.id).delete();
+        for (int i = 0; i < 5; i++) {
+            //noinspection ResultOfMethodCallIgnored
+            wavFile(c, p.id, i).delete();
+        }
     }
 
     public static void deleteAll(Context c) {
@@ -120,10 +125,12 @@ public final class ProjectStore {
         n.created = System.currentTimeMillis();
         n.modified = n.created;
         try {
-            File src = wavFile(c, p.id);
-            if (src.exists()) {
-                try (FileOutputStream o = new FileOutputStream(wavFile(c, n.id))) {
-                    o.write(readAll(src));
+            for (int i = 0; i < 5; i++) {
+                File src = wavFile(c, p.id, i);
+                if (src.exists()) {
+                    try (FileOutputStream o = new FileOutputStream(wavFile(c, n.id, i))) {
+                        o.write(readAll(src));
+                    }
                 }
             }
             save(c, n);

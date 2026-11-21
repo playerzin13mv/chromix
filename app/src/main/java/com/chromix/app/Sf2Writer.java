@@ -2,6 +2,7 @@ package com.chromix.app;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 
 /** Gera um arquivo SoundFont 2 (.sf2) completo, sem dependências. */
@@ -16,6 +17,12 @@ public final class Sf2Writer {
         public boolean loop = false;
         public int loopStart, loopEnd; // relativos ao início da amostra
         public int lo = 0, hi = 127;   // faixa de teclas da zona
+    }
+
+    /** Uma zona do instrumento: uma faixa de teclas que toca uma das amostras. */
+    public static final class Zone {
+        public final int sample, lo, hi;
+        public Zone(int sample, int lo, int hi) { this.sample = sample; this.lo = lo; this.hi = hi; }
     }
 
     private Sf2Writer() {}
@@ -76,10 +83,19 @@ public final class Sf2Writer {
         return Math.max(-12000, Math.min(8000, tc));
     }
 
+    /** Uma zona por amostra, usando lo/hi de cada amostra. */
     public static byte[] build(String bankName, String presetName, String author,
                                List<Sample> ss, int attackMs, int releaseMs, int volPercent) {
+        List<Zone> zs = new ArrayList<>();
+        for (int i = 0; i < ss.size(); i++) zs.add(new Zone(i, ss.get(i).lo, ss.get(i).hi));
+        return build(bankName, presetName, author, ss, zs, attackMs, releaseMs, volPercent);
+    }
+
+    public static byte[] build(String bankName, String presetName, String author,
+                               List<Sample> ss, List<Zone> zones, int attackMs, int releaseMs, int volPercent) {
         int n = ss.size();
-        if (n == 0) throw new IllegalArgumentException("Nenhuma amostra");
+        int nz = zones.size();
+        if (n == 0 || nz == 0) throw new IllegalArgumentException("Nenhuma amostra");
 
         // ---- sdta / smpl ----
         Buf smpl = new Buf();
@@ -125,17 +141,18 @@ public final class Sf2Writer {
             double v = Math.max(volPercent, 1) / 100.0;
             cB = (int) Math.min(1440, Math.round(-200.0 * Math.log10(v)));
         }
-        for (int i = 0; i < n; i++) {
-            Sample s = ss.get(i);
+        for (int i = 0; i < nz; i++) {
+            Zone z = zones.get(i);
+            Sample s = ss.get(z.sample);
             ibag.u16(genCount);
             ibag.u16(0);
-            igen.u16(43); igen.u8(s.lo); igen.u8(s.hi); genCount++;           // keyRange
+            igen.u16(43); igen.u8(z.lo); igen.u8(z.hi); genCount++;           // keyRange
             if (attackMs > 1) { igen.u16(34); igen.u16(timecents(attackMs) & 0xFFFF); genCount++; }
             igen.u16(38); igen.u16(timecents(releaseMs) & 0xFFFF); genCount++; // release
             if (cB > 0) { igen.u16(48); igen.u16(cB); genCount++; }            // atenuação
             if (s.loop) { igen.u16(54); igen.u16(1); genCount++; }             // sampleModes
             igen.u16(58); igen.u16(s.rootKey & 0xFFFF); genCount++;            // overridingRootKey
-            igen.u16(53); igen.u16(i); genCount++;                             // sampleID (último)
+            igen.u16(53); igen.u16(z.sample); genCount++;                      // sampleID (último)
         }
         ibag.u16(genCount); ibag.u16(0);
         igen.u16(0); igen.u16(0);
@@ -143,7 +160,7 @@ public final class Sf2Writer {
         // ---- inst ----
         Buf inst = new Buf();
         inst.str(presetName, 20); inst.u16(0);
-        inst.str("EOI", 20); inst.u16(n);
+        inst.str("EOI", 20); inst.u16(nz);
 
         Buf imod = new Buf();
         for (int k = 0; k < 10; k++) imod.u8(0);

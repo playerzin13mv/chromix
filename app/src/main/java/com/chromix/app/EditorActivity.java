@@ -1,6 +1,7 @@
 package com.chromix.app;
 
 import android.Manifest;
+import android.content.ClipData;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -33,16 +34,26 @@ public class EditorActivity extends BaseActivity implements PianoView.Listener {
     private static final int[] RATES = {0, 22050, 32000, 44100, 48000};
 
     private Project p;
-    private float[] audio;
+    private Slot cs;                       // vogal (slot) em edição
+    private int cur = 0;
+    private float[] audio;                 // áudio do slot em edição
+    private final float[][] audios = new float[5][];
+    private final boolean[] dirty = new boolean[5];
+    private boolean solo = false;          // piano toca só a vogal selecionada
+    private final float[] pkVal = new float[5];
+    private final int[] pkTs = new int[5], pkTe = new int[5];
+    private final float[][] pkRef = new float[5][];
     private Synth synth;
     private final Handler h = new Handler(Looper.getMainLooper());
     private boolean loading = false;
-    private boolean audioDirty = false;
 
     private WaveformView wave;
     private PianoView piano;
     private TextView title, status, noteLbl, sizeInfo, octLabel;
     private TextView chipTrim, chipLoop, btnRec, btnScale, chipSingle, chipMulti;
+    private TextView chipVowel, chipSolo, tuneTitle;
+    private final TextView[] vchips = new TextView[5];
+    private LinearLayout vowelRow;
     private UI.Stepper rootStep, rateStep, loStep, hiStep;
     private UI.SeekRow fineRow, atkRow, relRow, volRow;
     private Switch loopSw, normSw;
@@ -64,8 +75,13 @@ public class EditorActivity extends BaseActivity implements PianoView.Listener {
         String id = getIntent().getStringExtra("id");
         p = id == null ? null : ProjectStore.load(this, id);
         if (p == null) { finish(); return; }
-        audio = ProjectStore.loadAudio(this, p);
-        p.frames = audio == null ? 0 : audio.length;
+        for (int i = 0; i < 5; i++) {
+            audios[i] = ProjectStore.loadAudio(this, p, i);
+            p.slots[i].frames = audios[i] == null ? 0 : audios[i].length;
+        }
+        cur = 0;
+        cs = p.slots[0];
+        audio = audios[0];
         p.sanitize();
         synth = new Synth(this);
         build();
@@ -155,13 +171,43 @@ public class EditorActivity extends BaseActivity implements PianoView.Listener {
         wave = new WaveformView(this);
         wave.setListener(new WaveformView.Listener() {
             @Override public void onMarkers(boolean trimChanged) {
-                p.trimStart = wave.getTrimStart();
-                p.trimEnd = wave.getTrimEnd();
-                p.loopStart = wave.getLoopStart();
-                p.loopEnd = wave.getLoopEnd();
+                cs.trimStart = wave.getTrimStart();
+                cs.trimEnd = wave.getTrimEnd();
+                cs.loopStart = wave.getLoopStart();
+                cs.loopEnd = wave.getLoopEnd();
                 changed(false);
             }
         });
+        HorizontalScrollView vscroll = new HorizontalScrollView(this);
+        vscroll.setHorizontalScrollBarEnabled(false);
+        LinearLayout vrow = new LinearLayout(this);
+        vrow.setOrientation(LinearLayout.HORIZONTAL);
+        vrow.setGravity(Gravity.CENTER_VERTICAL);
+        chipVowel = chip("Modo vogais", new View.OnClickListener() {
+            @Override public void onClick(View v) { setVowelMode(!p.vowelMode); }
+        });
+        vrow.addView(chipVowel, UI.lpm(-2, -2, 0, 0, 10, 0, this));
+        vowelRow = new LinearLayout(this);
+        vowelRow.setOrientation(LinearLayout.HORIZONTAL);
+        vowelRow.setGravity(Gravity.CENTER_VERTICAL);
+        for (int i = 0; i < 5; i++) {
+            final int idx = i;
+            vchips[i] = chip(Project.VOWELS[i], new View.OnClickListener() {
+                @Override public void onClick(View v) { selectSlot(idx); }
+            });
+            vowelRow.addView(vchips[i], UI.lpm(-2, -2, 0, 0, 6, 0, this));
+        }
+        chipSolo = chip("Só esta vogal", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                solo = !solo;
+                styleChip(chipSolo, solo);
+                updateSynth();
+            }
+        });
+        vowelRow.addView(chipSolo, UI.lpm(-2, -2, 8, 0, 0, 0, this));
+        vrow.addView(vowelRow);
+        vscroll.addView(vrow);
+        left.addView(vscroll, UI.lpm(-1, -2, 0, 0, 0, 6, this));
         left.addView(wave, new LinearLayout.LayoutParams(-1, 0, 1f));
 
         HorizontalScrollView hs = new HorizontalScrollView(this);
@@ -206,9 +252,10 @@ public class EditorActivity extends BaseActivity implements PianoView.Listener {
         sv.addView(col, new ScrollView.LayoutParams(-1, -2));
 
         LinearLayout tune = UI.card(this, "Afinação");
+        tuneTitle = (TextView) tune.getChildAt(0);
         rootStep = new UI.Stepper(this, "Nota raiz", new UI.OnStep() {
             @Override public void on(int dir) {
-                p.rootNote = Math.max(0, Math.min(127, p.rootNote + dir));
+                cs.rootNote = Math.max(0, Math.min(127, cs.rootNote + dir));
                 changed(false);
                 refreshUi();
             }
@@ -219,7 +266,7 @@ public class EditorActivity extends BaseActivity implements PianoView.Listener {
                 new UI.OnVal() {
                     @Override public void on(int v, boolean user) {
                         if (loading || !user) return;
-                        p.fineCents = v;
+                        cs.fineCents = v;
                         changed(false);
                     }
                 });
@@ -230,7 +277,7 @@ public class EditorActivity extends BaseActivity implements PianoView.Listener {
         loopSw = UI.sw(this, "Repetir (loop) enquanto a tecla está pressionada", false, new CompoundButton.OnCheckedChangeListener() {
             @Override public void onCheckedChanged(CompoundButton v, boolean on) {
                 if (loading) return;
-                p.loop = on;
+                cs.loop = on;
                 if (on) p.sanitize();
                 syncWave();
                 changed(false);
@@ -294,7 +341,8 @@ public class EditorActivity extends BaseActivity implements PianoView.Listener {
         out.addView(modes);
         TextView modeHelp = UI.text(this,
                 "Nota única: guarda 1 áudio e o programa muda o tom (arquivo pequeno).\n"
-                        + "Uma por nota: cada tecla tem seu próprio áudio já afinado (som mais fiel, arquivo maior).",
+                        + "Uma por nota: cada tecla tem seu próprio áudio já afinado (som mais fiel, arquivo maior).\n"
+                        + "Modo vogais: a tecla toca A, E, I, O, A, E, I, O… (só as vogais que têm áudio).",
                 11, Pal.sub, false);
         out.addView(modeHelp, UI.lpm(-1, -2, 0, 4, 0, 6, this));
 
@@ -373,7 +421,7 @@ public class EditorActivity extends BaseActivity implements PianoView.Listener {
         piano.setListener(this);
         piano.setOctaves(Prefs.octaves(this));
         piano.setNoteStyle(Prefs.noteStyle(this));
-        int rootOct = p.rootNote / 12 - 1;
+        int rootOct = cs.rootNote / 12 - 1;
         piano.setFirstKey(12 * (Math.max(0, rootOct - piano.getOctaves() / 2) + 1));
         int ph = Math.max(UI.dp(this, 110), (int) (getResources().getDisplayMetrics().heightPixels * 0.30f));
         root.addView(piano, UI.lpm(-1, ph, 8, 0, 8, 6, this));
@@ -387,9 +435,9 @@ public class EditorActivity extends BaseActivity implements PianoView.Listener {
         loading = true;
         int style = Prefs.noteStyle(this);
         title.setText(p.name);
-        rootStep.set(Pal.noteName(p.rootNote, style) + " (" + p.rootNote + ")");
-        fineRow.set(p.fineCents);
-        loopSw.setChecked(p.loop);
+        rootStep.set(Pal.noteName(cs.rootNote, style) + " (" + cs.rootNote + ")");
+        fineRow.set(cs.fineCents);
+        loopSw.setChecked(cs.loop);
         atkRow.set(p.attackMs);
         relRow.set(p.releaseMs);
         volRow.set(p.volume);
@@ -401,21 +449,75 @@ public class EditorActivity extends BaseActivity implements PianoView.Listener {
         hiStep.set(Pal.noteName(p.rangeHi, style));
         styleChip(chipTrim, modeIsTrim);
         styleChip(chipLoop, !modeIsTrim);
+        refreshVowelUi();
         wave.setData(audio);
         syncWave();
-        piano.setRoot(p.rootNote);
+        piano.setRoot(cs.rootNote);
         piano.setRange(p.rangeLo, p.rangeHi);
         updateOctLabel();
         loading = false;
         updateSizeInfo();
     }
 
+    private void refreshVowelUi() {
+        styleChip(chipVowel, p.vowelMode);
+        chipVowel.setText(p.vowelMode ? "Modo vogais: ligado" : "Modo vogais: desligado");
+        vowelRow.setVisibility(p.vowelMode ? View.VISIBLE : View.GONE);
+        for (int i = 0; i < 5; i++) {
+            vchips[i].setText(Project.VOWELS[i] + (p.slots[i].has() ? " ●" : "") + (i == 4 ? " (opcional)" : ""));
+            styleChip(vchips[i], i == cur);
+        }
+        styleChip(chipSolo, solo);
+        tuneTitle.setText(p.vowelMode ? "AFINAÇÃO — VOGAL " + Project.VOWELS[cur] : "AFINAÇÃO");
+    }
+
+    private boolean anyAudio() {
+        return p.activeSlots(audios).length > 0;
+    }
+
+    private void selectSlot(int i) {
+        if (i < 0 || i > 4) return;
+        stopScale();
+        if (synth != null) synth.allOff();
+        cur = i;
+        cs = p.slots[i];
+        audio = audios[i];
+        refreshUi();
+        updateSynth();
+    }
+
+    private void setVowelMode(boolean on) {
+        stopScale();
+        if (synth != null) synth.allOff();
+        p.vowelMode = on;
+        if (!on) {
+            solo = false;
+            cur = 0;
+            cs = p.slots[0];
+            audio = audios[0];
+        }
+        changed(false);
+        refreshUi();
+        if (on) {
+            toastLong("Modo vogais: cada tecla toca uma vogal em sequência (A E I O A E I O…). "
+                    + "Grave uma por vez ou importe vários áudios de uma vez. A vogal U é opcional.");
+        }
+    }
+
+    /** Qual slot toca para esta tecla (mesma regra do .sf2): vogal ativa número (tecla mod n). */
+    private int slotFor(int key) {
+        if (!p.vowelMode) return 0;
+        if (solo) return cur;
+        int[] act = p.activeSlots(audios);
+        return act.length == 0 ? -1 : act[key % act.length];
+    }
+
     private boolean modeIsTrim = true;
 
     private void setMode(int m) {
         modeIsTrim = m == WaveformView.MODE_TRIM;
-        if (!modeIsTrim && !p.loop) {
-            p.loop = true;
+        if (!modeIsTrim && !cs.loop) {
+            cs.loop = true;
             p.sanitize();
             loading = true;
             loopSw.setChecked(true);
@@ -429,8 +531,8 @@ public class EditorActivity extends BaseActivity implements PianoView.Listener {
     }
 
     private void syncWave() {
-        wave.setTrim(p.trimStart, p.trimEnd);
-        wave.setLoop(p.loopStart, p.loopEnd, p.loop);
+        wave.setTrim(cs.trimStart, cs.trimEnd);
+        wave.setLoop(cs.loopStart, cs.loopEnd, cs.loop);
     }
 
     private void updateOctLabel() {
@@ -459,7 +561,7 @@ public class EditorActivity extends BaseActivity implements PianoView.Listener {
 
     private void updateSizeInfo() {
         if (sizeInfo == null) return;
-        if (audio == null || p.frames <= 0) {
+        if (!anyAudio()) {
             sizeInfo.setTextColor(Pal.sub);
             sizeInfo.setText("Adicione um áudio para ver o tamanho do .sf2");
             return;
@@ -480,14 +582,14 @@ public class EditorActivity extends BaseActivity implements PianoView.Listener {
     // ------------------------------------------------------------------ salvar / sintetizador
 
     private void changed(boolean audioChanged) {
-        if (audioChanged) audioDirty = true;
+        if (audioChanged) dirty[cur] = true;
         p.sanitize();
         status.setText("salvando…");
         h.removeCallbacks(saveTask);
         h.postDelayed(saveTask, 700);
         updateSynth();
         if (piano != null) {
-            piano.setRoot(p.rootNote);
+            piano.setRoot(cs.rootNote);
             piano.setRange(p.rangeLo, p.rangeHi);
         }
         updateSizeInfo();
@@ -496,9 +598,11 @@ public class EditorActivity extends BaseActivity implements PianoView.Listener {
     private void saveNow() {
         try {
             p.modified = System.currentTimeMillis();
-            if (audioDirty && audio != null) {
-                ProjectStore.saveAudio(this, p, audio);
-                audioDirty = false;
+            for (int i = 0; i < 5; i++) {
+                if (dirty[i] && audios[i] != null) {
+                    ProjectStore.saveAudio(this, p, i, audios[i]);
+                    dirty[i] = false;
+                }
             }
             ProjectStore.save(this, p);
             if (status != null) status.setText("salvo ✓");
@@ -507,23 +611,46 @@ public class EditorActivity extends BaseActivity implements PianoView.Listener {
         }
     }
 
+    private float peakOf(int i) {
+        Slot s = p.slots[i];
+        float[] a = audios[i];
+        if (pkRef[i] != a || pkTs[i] != s.trimStart || pkTe[i] != s.trimEnd) {
+            pkVal[i] = Dsp.peak(a, s.trimStart, s.trimEnd);
+            pkRef[i] = a;
+            pkTs[i] = s.trimStart;
+            pkTe[i] = s.trimEnd;
+        }
+        return pkVal[i];
+    }
+
     private void updateSynth() {
         if (synth == null) return;
-        if (audio == null || p.frames <= 0) { synth.set(null, 44100, 0, 0, false, 0, 0, 60, 0, 0, 0, 0); return; }
-        float peak = Dsp.peak(audio, p.trimStart, p.trimEnd);
-        float g = (p.normalize && peak > 0.0001f) ? 0.95f / peak : 1f;
-        g *= p.volume / 100f;
-        synth.set(audio, p.sampleRate, p.trimStart, p.trimEnd, p.loop, p.loopStart, p.loopEnd,
-                p.rootNote, p.fineCents, p.attackMs / 1000f, p.releaseMs / 1000f, g);
+        for (int i = 0; i < 5; i++) {
+            Slot s = p.slots[i];
+            float[] a = audios[i];
+            if (a == null || s.frames <= 0) {
+                synth.setSound(i, null, 44100, 0, 0, false, 0, 0, 60, 0, 0f);
+                continue;
+            }
+            float pk = peakOf(i);
+            float g = (p.normalize && pk > 0.0001f) ? 0.95f / pk : 1f;
+            g *= p.volume / 100f;
+            synth.setSound(i, a, s.sampleRate, s.trimStart, s.trimEnd, s.loop, s.loopStart, s.loopEnd,
+                    s.rootNote, s.fineCents, g);
+        }
+        synth.setEnvelope(p.attackMs / 1000f, p.releaseMs / 1000f);
+        synth.setMapping(p.vowelMode, p.activeSlots(audios), (p.vowelMode && solo) ? cur : -1);
     }
 
     // ------------------------------------------------------------------ piano
 
     @Override
     public void down(int key, int pid) {
-        if (audio == null) { noteLbl.setText("Adicione um áudio primeiro"); return; }
+        if (!anyAudio()) { noteLbl.setText("Adicione um áudio primeiro"); return; }
         synth.noteOn(key, pid);
-        noteLbl.setText(Pal.noteName(key, Prefs.noteStyle(this)) + "  (" + key + ")");
+        int sl = slotFor(key);
+        String extra = (p.vowelMode && sl >= 0) ? "  ·  vogal " + Project.VOWELS[sl] : "";
+        noteLbl.setText(Pal.noteName(key, Prefs.noteStyle(this)) + "  (" + key + ")" + extra);
         if (Prefs.haptic(this)) piano.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
     }
 
@@ -534,10 +661,10 @@ public class EditorActivity extends BaseActivity implements PianoView.Listener {
 
     private void toggleScale() {
         if (scaleRunning) { stopScale(); return; }
-        if (audio == null) { toast("Adicione um áudio primeiro"); return; }
+        if (!anyAudio()) { toast("Adicione um áudio primeiro"); return; }
         scaleRunning = true;
         btnScale.setText("■ Parar escala");
-        final int base = p.rootNote;
+        final int base = cs.rootNote;
         final int style = Prefs.noteStyle(this);
         long last = 0;
         for (int i = 0; i <= 12; i++) {
@@ -588,6 +715,7 @@ public class EditorActivity extends BaseActivity implements PianoView.Listener {
         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         i.addCategory(Intent.CATEGORY_OPENABLE);
         i.setType("audio/*");
+        if (p.vowelMode) i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
         try {
             startActivityForResult(i, RQ_IMPORT);
         } catch (Exception e) {
@@ -598,83 +726,148 @@ public class EditorActivity extends BaseActivity implements PianoView.Listener {
     @Override
     protected void onActivityResult(int rq, int res, Intent data) {
         super.onActivityResult(rq, res, data);
-        if (res != RESULT_OK || data == null || data.getData() == null) return;
-        final Uri u = data.getData();
+        if (res != RESULT_OK || data == null) return;
         if (rq == RQ_IMPORT) {
-            toast("Importando…");
-            new Thread(new Runnable() {
-                @Override public void run() {
-                    try {
-                        final AudioIO.Pcm pcm = AudioIO.decode(EditorActivity.this, u);
-                        runOnUiThread(new Runnable() {
-                            @Override public void run() { setAudio(pcm.data, pcm.rate, true); }
-                        });
-                    } catch (final Exception e) {
-                        runOnUiThread(new Runnable() {
-                            @Override public void run() { toastLong("Não consegui importar: " + e.getMessage()); }
-                        });
-                    }
-                }
-            }, "chromix-import").start();
-        } else if (rq == RQ_EXPORT) {
-            doExport(u);
+            final List<Uri> uris = new ArrayList<>();
+            ClipData cd = data.getClipData();
+            if (cd != null) {
+                for (int i = 0; i < cd.getItemCount(); i++) uris.add(cd.getItemAt(i).getUri());
+            } else if (data.getData() != null) {
+                uris.add(data.getData());
+            }
+            if (!uris.isEmpty()) importUris(uris);
+        } else if (rq == RQ_EXPORT && data.getData() != null) {
+            doExport(data.getData());
         }
     }
 
+    /** Sem o modo vogais usa só o primeiro arquivo; com ele, um arquivo por vogal a partir da selecionada. */
+    private void importUris(final List<Uri> uris) {
+        final int firstSlot = cur;
+        final int max = p.vowelMode ? Math.min(uris.size(), 5 - firstSlot) : 1;
+        toast(max > 1 ? "Importando " + max + " áudios…" : "Importando…");
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final List<AudioIO.Pcm> got = new ArrayList<>();
+                String err = null;
+                for (int i = 0; i < max; i++) {
+                    try {
+                        got.add(AudioIO.decode(EditorActivity.this, uris.get(i)));
+                    } catch (Exception e) {
+                        err = e.getMessage() != null ? e.getMessage() : "formato não suportado";
+                        got.add(null);
+                    }
+                }
+                final String fe = err;
+                runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        int ok = 0;
+                        for (int i = 0; i < got.size(); i++) {
+                            AudioIO.Pcm pcm = got.get(i);
+                            if (pcm == null) continue;
+                            setAudioAt(firstSlot + i, pcm.data, pcm.rate, true, max == 1);
+                            ok++;
+                        }
+                        if (ok > 0 && max > 1) {
+                            changed(true);
+                            refreshUi();
+                            toast(ok + " vogais importadas, a partir da " + Project.VOWELS[firstSlot]);
+                        }
+                        if (fe != null) toastLong("Não consegui importar: " + fe);
+                    }
+                });
+            }
+        }, "chromix-import").start();
+    }
+
     private void setAudio(float[] a, int rate, boolean detect) {
+        setAudioAt(cur, a, rate, detect, true);
+    }
+
+    /** Coloca um áudio num slot. refresh = atualizar a tela (e avisar a nota detectada). */
+    private void setAudioAt(int slot, float[] a, int rate, boolean detect, boolean refresh) {
+        if (slot < 0 || slot > 4) return;
         stopScale();
-        synth.allOff();
-        audio = a;
-        p.sampleRate = rate;
-        p.frames = a.length;
-        p.trimStart = 0;
-        p.trimEnd = a.length;
-        p.loopStart = a.length / 4;
-        p.loopEnd = a.length * 3 / 4;
-        p.fineCents = 0;
-        if (detect) detectPitch(true);
-        changed(true);
-        refreshUi();
+        if (synth != null) synth.allOff();
+        Slot s = p.slots[slot];
+        audios[slot] = a;
+        dirty[slot] = true;
+        s.sampleRate = rate;
+        s.frames = a.length;
+        s.trimStart = 0;
+        s.trimEnd = a.length;
+        s.loopStart = a.length / 4;
+        s.loopEnd = a.length * 3 / 4;
+        s.fineCents = 0;
+        if (slot == cur) audio = a;
+        if (detect) detectPitchFor(s, a, refresh);
         if (a.length >= rate * AudioIO.MAX_SECONDS) toast("Áudio cortado em " + AudioIO.MAX_SECONDS + " segundos");
+        if (refresh) {
+            changed(true);
+            refreshUi();
+        }
     }
 
     private void useDemo() {
-        float[] v = Dsp.demoVoice(44100);
-        setAudio(v, 44100, false);
-        p.rootNote = 57;
-        p.fineCents = 4;
-        p.loop = true;
-        p.loopStart = 200 * 40;
-        p.loopEnd = 200 * 180;
-        changed(false);
+        if (p.vowelMode) {
+            // preenche as vogais A, E, I, O que ainda estão vazias (se todas já têm áudio, troca só a selecionada)
+            boolean any = false;
+            for (int i = 0; i < 4; i++) {
+                if (!p.slots[i].has()) { demoInto(i); any = true; }
+            }
+            if (!any) demoInto(cur);
+            toast("Vogais de exemplo carregadas (A, E, I, O)");
+        } else {
+            demoInto(cur);
+            toast("Voz de exemplo carregada (nota raiz A3)");
+        }
+        changed(true);
         refreshUi();
-        toast("Voz de exemplo carregada (nota raiz A3)");
+    }
+
+    private void demoInto(int slot) {
+        setAudioAt(slot, Dsp.demoVowel(44100, p.vowelMode ? slot : 0), 44100, false, false);
+        Slot s = p.slots[slot];
+        s.rootNote = 57;
+        s.fineCents = 4;
+        s.loop = true;
+        s.loopStart = 200 * 40;
+        s.loopEnd = 200 * 180;
     }
 
     private void detectPitch(boolean auto) {
         if (audio == null) { if (!auto) toast("Adicione um áudio primeiro"); return; }
-        double hz = Dsp.detectPitch(audio, p.trimStart, p.trimEnd, p.sampleRate);
+        if (detectPitchFor(cs, audio, true)) {
+            changed(false);
+            refreshUi();
+        }
+    }
+
+    /** Detecta a nota de um áudio e grava no slot. Retorna true se conseguiu. */
+    private boolean detectPitchFor(Slot s, float[] a, boolean showToast) {
+        double hz = Dsp.detectPitch(a, s.trimStart, s.trimEnd, s.sampleRate);
         if (hz <= 0) {
-            if (!auto) toast("Não consegui detectar a nota. Ajuste a nota raiz manualmente.");
-            else toast("Não deu para detectar a nota — ajuste a nota raiz na mão");
-            return;
+            if (showToast) toast("Não deu para detectar a nota. Ajuste a nota raiz na mão.");
+            return false;
         }
         double midi = Dsp.freqToMidi(hz);
         int n = (int) Math.round(midi);
         int cents = (int) Math.round((midi - n) * 100);
-        p.rootNote = Math.max(0, Math.min(127, n));
-        p.fineCents = Math.max(-50, Math.min(50, cents));
-        toast("Nota detectada: " + Pal.noteName(p.rootNote, Prefs.noteStyle(this))
-                + " (" + (cents >= 0 ? "+" : "") + cents + " cents)");
-        if (!auto) { changed(false); refreshUi(); }
+        s.rootNote = Math.max(0, Math.min(127, n));
+        s.fineCents = Math.max(-50, Math.min(50, cents));
+        if (showToast) {
+            toast("Nota detectada: " + Pal.noteName(s.rootNote, Prefs.noteStyle(this))
+                    + " (" + (cents >= 0 ? "+" : "") + cents + " cents)");
+        }
+        return true;
     }
 
     private void smoothLoop() {
         if (audio == null) { toast("Adicione um áudio primeiro"); return; }
-        if (!p.loop) { p.loop = true; p.sanitize(); }
-        int[] r = Dsp.refineLoop(audio, p.loopStart, p.loopEnd, p.trimStart, p.trimEnd);
-        p.loopStart = r[0];
-        p.loopEnd = r[1];
+        if (!cs.loop) { cs.loop = true; p.sanitize(); }
+        int[] r = Dsp.refineLoop(audio, cs.loopStart, cs.loopEnd, cs.trimStart, cs.trimEnd);
+        cs.loopStart = r[0];
+        cs.loopEnd = r[1];
         changed(false);
         refreshUi();
         toast("Loop ajustado para emendar sem estalo");
@@ -729,7 +922,12 @@ public class EditorActivity extends BaseActivity implements PianoView.Listener {
         btnRec.setText("Gravar");
         if (a.length < rate / 10) { toast("Gravação muito curta"); return; }
         a = trimSilence(a, rate);
+        int was = cur;
         setAudio(a, rate, true);
+        if (p.vowelMode && was < 4 && !p.slots[was + 1].has()) {
+            selectSlot(was + 1);
+            toast("Vogal " + Project.VOWELS[was] + " gravada! Agora grave a " + Project.VOWELS[was + 1]);
+        }
     }
 
     /** Tira o silêncio do começo e do fim da gravação. */
@@ -755,7 +953,7 @@ public class EditorActivity extends BaseActivity implements PianoView.Listener {
     }
 
     private void exportClick() {
-        if (audio == null || p.frames <= 0) { toast("Adicione um áudio primeiro"); return; }
+        if (!anyAudio()) { toast("Adicione um áudio primeiro"); return; }
         if (Exporter.estimateBytes(p) > Exporter.MAX_BYTES) {
             toastLong("Arquivo grande demais. Corte o áudio ou reduza a faixa de notas.");
             return;
@@ -775,7 +973,7 @@ public class EditorActivity extends BaseActivity implements PianoView.Listener {
     private void doExport(final Uri u) {
         toast("Gerando .sf2…");
         final Project snap = Project.fromJson(p.toJson());
-        final float[] a = audio;
+        final float[][] a = audios.clone();
         final String author = Prefs.author(this);
         new Thread(new Runnable() {
             @Override public void run() {

@@ -139,16 +139,25 @@ public class MainActivity extends BaseActivity {
         c.setClickable(true);
 
         View dot = new View(this);
-        dot.setBackground(UI.rr(this, Pal.RAINBOW[p.rootNote % 12], 8));
+        dot.setBackground(UI.rr(this, Pal.RAINBOW[p.slots[0].rootNote % 12], 8));
         c.addView(dot, UI.lpm(UI.dp(this, 8), UI.dp(this, 40), 0, 0, 12, 0, this));
 
         LinearLayout info = new LinearLayout(this);
         info.setOrientation(LinearLayout.VERTICAL);
         info.addView(UI.text(this, p.name, 16, Pal.text, true));
-        String dur = p.frames > 0 ? String.format(java.util.Locale.US, "%.1f s", (p.trimEnd - p.trimStart) / (double) p.sampleRate) : "sem áudio";
-        String sub = "Nota raiz " + Pal.noteName(p.rootNote, Prefs.noteStyle(this)) + "  ·  " + dur
-                + "  ·  " + (p.exportMode == 0 ? "nota única" : "uma por nota")
-                + (p.loop ? "  ·  loop" : "");
+        Slot s0 = p.slots[0];
+        String mode = p.exportMode == 0 ? "nota única" : "uma por nota";
+        String sub;
+        if (p.vowelMode) {
+            String v = p.vowelSummary();
+            sub = "Vogais: " + (v.isEmpty() ? "nenhuma ainda" : v) + "  ·  " + mode;
+        } else {
+            String dur = s0.frames > 0
+                    ? String.format(java.util.Locale.US, "%.1f s", (s0.trimEnd - s0.trimStart) / (double) s0.sampleRate)
+                    : "sem áudio";
+            sub = "Nota raiz " + Pal.noteName(s0.rootNote, Prefs.noteStyle(this)) + "  ·  " + dur
+                    + "  ·  " + mode + (s0.loop ? "  ·  loop" : "");
+        }
         info.addView(UI.text(this, sub, 12, Pal.sub, false));
         String when = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(new Date(p.modified));
         info.addView(UI.text(this, "Editado em " + when, 11, Pal.sub, false));

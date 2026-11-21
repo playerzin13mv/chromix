@@ -1,22 +1,22 @@
 package com.chromix.app;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
-/** Um projeto de Chromatic. O áudio fica num .wav separado com o mesmo id. */
+/**
+ * Um projeto de Chromatic. Tem 5 "slots" de áudio (A, E, I, O, U).
+ * Sem o modo vogais só o slot 0 é usado. Os áudios ficam em .wav separados.
+ */
 public class Project {
+    public static final String[] VOWELS = {"A", "E", "I", "O", "U"};
+
     public String id = "";
     public String name = "Chromatic";
     public long created, modified;
 
-    public int sampleRate = 44100;
-    public int frames = 0;
-    public int rootNote = 60;
-    public int fineCents = 0;        // quanto a amostra está "sustenida" (cents)
-    public int trimStart = 0;
-    public int trimEnd = 0;
-    public boolean loop = false;
-    public int loopStart = 0;
-    public int loopEnd = 0;
+    public final Slot[] slots = new Slot[5];
+
+    public boolean vowelMode = false;
     public int attackMs = 5;
     public int releaseMs = 150;
     public int volume = 100;
@@ -26,6 +26,10 @@ public class Project {
     public int exportMode = 0;       // 0 = nota única, 1 = uma amostra por nota
     public int exportRate = 0;       // 0 = original
 
+    public Project() {
+        for (int i = 0; i < slots.length; i++) slots[i] = new Slot();
+    }
+
     public JSONObject toJson() {
         try {
             JSONObject o = new JSONObject();
@@ -33,15 +37,7 @@ public class Project {
             o.put("name", name);
             o.put("created", created);
             o.put("modified", modified);
-            o.put("sampleRate", sampleRate);
-            o.put("frames", frames);
-            o.put("rootNote", rootNote);
-            o.put("fineCents", fineCents);
-            o.put("trimStart", trimStart);
-            o.put("trimEnd", trimEnd);
-            o.put("loop", loop);
-            o.put("loopStart", loopStart);
-            o.put("loopEnd", loopEnd);
+            o.put("vowelMode", vowelMode);
             o.put("attackMs", attackMs);
             o.put("releaseMs", releaseMs);
             o.put("volume", volume);
@@ -50,6 +46,9 @@ public class Project {
             o.put("rangeHi", rangeHi);
             o.put("exportMode", exportMode);
             o.put("exportRate", exportRate);
+            JSONArray a = new JSONArray();
+            for (Slot s : slots) a.put(s.toJson());
+            o.put("slots", a);
             return o;
         } catch (Exception e) {
             return new JSONObject();
@@ -63,15 +62,7 @@ public class Project {
         p.name = o.optString("name", "Chromatic");
         p.created = o.optLong("created", 0);
         p.modified = o.optLong("modified", 0);
-        p.sampleRate = o.optInt("sampleRate", 44100);
-        p.frames = o.optInt("frames", 0);
-        p.rootNote = o.optInt("rootNote", 60);
-        p.fineCents = o.optInt("fineCents", 0);
-        p.trimStart = o.optInt("trimStart", 0);
-        p.trimEnd = o.optInt("trimEnd", 0);
-        p.loop = o.optBoolean("loop", false);
-        p.loopStart = o.optInt("loopStart", 0);
-        p.loopEnd = o.optInt("loopEnd", 0);
+        p.vowelMode = o.optBoolean("vowelMode", false);
         p.attackMs = o.optInt("attackMs", 5);
         p.releaseMs = o.optInt("releaseMs", 150);
         p.volume = o.optInt("volume", 100);
@@ -80,19 +71,49 @@ public class Project {
         p.rangeHi = o.optInt("rangeHi", 96);
         p.exportMode = o.optInt("exportMode", 0);
         p.exportRate = o.optInt("exportRate", 0);
+        JSONArray a = o.optJSONArray("slots");
+        if (a != null) {
+            for (int i = 0; i < p.slots.length && i < a.length(); i++) {
+                JSONObject so = a.optJSONObject(i);
+                if (so != null) p.slots[i] = Slot.fromJson(so);
+            }
+        } else {
+            // projeto da versão 1.0: os campos do áudio ficavam no topo
+            p.slots[0] = Slot.fromJson(o);
+        }
         return p;
     }
 
-    /** Garante que trim e loop sejam coerentes. */
     public void sanitize() {
-        if (frames <= 0) { trimStart = 0; trimEnd = 0; loopStart = 0; loopEnd = 0; return; }
-        trimStart = Math.max(0, Math.min(trimStart, frames - 1));
-        if (trimEnd <= trimStart || trimEnd > frames) trimEnd = frames;
-        loopStart = Math.max(trimStart, Math.min(loopStart, trimEnd - 1));
-        if (loopEnd <= loopStart || loopEnd > trimEnd) loopEnd = trimEnd;
-        rootNote = Math.max(0, Math.min(127, rootNote));
+        for (Slot s : slots) s.sanitize();
         if (rangeLo > rangeHi) { int t = rangeLo; rangeLo = rangeHi; rangeHi = t; }
         rangeLo = Math.max(0, rangeLo);
         rangeHi = Math.min(127, rangeHi);
+    }
+
+    /**
+     * Slots que realmente tocam, em ordem (A, E, I, O, U). Sem o modo vogais é só o slot 0.
+     * Se audios != null, também exige que o áudio esteja carregado.
+     */
+    public int[] activeSlots(float[][] audios) {
+        int[] tmp = new int[5];
+        int n = 0;
+        int max = vowelMode ? 5 : 1;
+        for (int i = 0; i < max; i++) {
+            if (slots[i].frames > 0 && (audios == null || audios[i] != null)) tmp[n++] = i;
+        }
+        return java.util.Arrays.copyOf(tmp, n);
+    }
+
+    /** Ex.: "A E I O" (vogais que já têm áudio). */
+    public String vowelSummary() {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < 5; i++) {
+            if (slots[i].frames > 0) {
+                if (sb.length() > 0) sb.append(' ');
+                sb.append(VOWELS[i]);
+            }
+        }
+        return sb.toString();
     }
 }

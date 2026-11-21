@@ -159,8 +159,20 @@ public final class Dsp {
         return new int[]{s, bestEnd};
     }
 
+    private static final double[][] FORMANTS = {
+            {700, 1200, 2600},   // A
+            {500, 1900, 2600},   // E
+            {300, 2300, 3000},   // I
+            {500, 900, 2500},    // O
+            {320, 800, 2400}     // U
+    };
+
     /** Voz sintética "ah" periódica (período inteiro = rate/200 amostras) para testar o app. */
-    public static float[] demoVoice(int rate) {
+    public static float[] demoVoice(int rate) { return demoVowel(rate, 0); }
+
+    /** Vogal sintética (0=A, 1=E, 2=I, 3=O, 4=U), periódica: dá para fazer loop sem estalo. */
+    public static float[] demoVowel(int rate, int vowel) {
+        double[] fm = FORMANTS[Math.max(0, Math.min(4, vowel))];
         int period = 200;
         double f0 = rate / (double) period;
         int n = (rate * 12 / 10 / period) * period;
@@ -169,8 +181,8 @@ public final class Dsp {
             double hf = h * f0;
             if (hf > rate / 2.2) break;
             double amp = Math.pow(h, -0.8)
-                    * (1.0 + 2.5 * Math.exp(-sq((hf - 700) / 220)) + 1.5 * Math.exp(-sq((hf - 1200) / 260))
-                    + 0.6 * Math.exp(-sq((hf - 2600) / 400)));
+                    * (1.0 + 2.5 * Math.exp(-sq((hf - fm[0]) / 220)) + 1.5 * Math.exp(-sq((hf - fm[1]) / 260))
+                    + 0.6 * Math.exp(-sq((hf - fm[2]) / 400)));
             for (int i = 0; i < n; i++) {
                 o[i] += (float) (amp * Math.sin(2 * Math.PI * h * i / period));
             }
